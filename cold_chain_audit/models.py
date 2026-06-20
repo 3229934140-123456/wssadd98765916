@@ -79,3 +79,5 @@ class AuditResult:
     post_unload_level: str = ""
     overtemp_total_minutes: float = 0.0
     overtemp_max_temp: float = 0.0
+    remark: str = ""
+    responsible_person: str = ""

@@ -313,6 +313,8 @@ def export_review_csv(
             "异常类型": _get_abnormal_tags(r) if r.is_abnormal else "",
             "处理建议": "; ".join(r.suggestions) if r.suggestions else "",
             "复核状态": status,
+            "备注": r.remark,
+            "责任人": r.responsible_person,
             "摘要文件路径": r.summary_file_path if r.summary_file_path else ""
         })
 
@@ -370,6 +372,11 @@ def generate_plate_handover_report(
                 if not r.has_standard:
                     abnormal_tags_set.add("无标准")
 
+            pending_remarks = []
+            for r in abnormal_list:
+                if r.review_status == "待复核" and r.remark:
+                    pending_remarks.append(f"{r.waybill_no}: {r.remark}")
+
             rows.append({
                 "日期": d,
                 "车牌": plate,
@@ -379,6 +386,7 @@ def generate_plate_handover_report(
                 "主要异常类型": "、".join(sorted(abnormal_tags_set)),
                 "待复核运单": "; ".join(pending_wbs),
                 "待复核数": len(pending_wbs),
+                "待复核备注": "; ".join(pending_remarks),
                 "已确认运单": "; ".join(confirmed_wbs),
                 "已确认数": len(confirmed_wbs),
                 "已放行运单": "; ".join(released_wbs),
@@ -422,6 +430,170 @@ def print_plate_summary(results: List[AuditResult]) -> None:
 
             if pending:
                 pending_wbs = [r.waybill_no for r in group if r.is_abnormal and r.review_status == "待复核"]
+                remark_wbs = [r for r in group if r.is_abnormal and r.review_status == "待复核" and r.remark]
                 print(f"      待复核: {', '.join(pending_wbs)}")
+                if remark_wbs:
+                    for rr in remark_wbs:
+                        print(f"        {rr.waybill_no} 备注: {rr.remark}")
     print("-" * 60)
+
+
+def generate_vehicle_review(
+    all_results: List[AuditResult],
+    output_dir: str
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+
+    date_groups: dict = defaultdict(list)
+    for r in all_results:
+        d = r.load_time.strftime('%Y-%m-%d')
+        date_groups[d].append(r)
+
+    all_report_files = []
+
+    for d, day_results in sorted(date_groups.items()):
+        plate_groups: dict = defaultdict(list)
+        for r in day_results:
+            plate_groups[r.plate_number].append(r)
+
+        for plate, group in sorted(plate_groups.items()):
+            group_sorted = sorted(group, key=lambda r: r.load_time)
+            filepath = os.path.join(output_dir, f"车辆复盘_{d}_{plate}.csv")
+
+            rows = []
+            first_load = group_sorted[0].load_time
+            last_unload = group_sorted[-1].unload_time
+
+            for seq, r in enumerate(group_sorted, 1):
+                abnormal_tag = _get_abnormal_tags(r) if r.is_abnormal else ""
+                review_st = r.review_status if r.is_abnormal else "正常"
+                post_info = ""
+                if r.has_post_unload_data:
+                    lv = f" [{r.post_unload_level}]" if r.post_unload_level else ""
+                    post_info = f"{r.post_unload_minutes:.0f}分钟{lv} 最高{r.post_unload_max_temp:.1f}℃"
+
+                rows.append({
+                    "序号": seq,
+                    "运单号": r.waybill_no,
+                    "客户": r.customer,
+                    "肉品类型": r.meat_type,
+                    "装车时间": r.load_time.strftime('%H:%M'),
+                    "卸货时间": r.unload_time.strftime('%H:%M'),
+                    "运输时长(分钟)": r.actual_duration_minutes,
+                    "匹配记录数": r.matched_total_count,
+                    "途中记录数": r.temp_records_count,
+                    "实际温度范围": f"{r.actual_temp_min:.1f}~{r.actual_temp_max:.1f}℃" if r.matched_total_count > 0 else "无数据",
+                    "目标温度范围": f"{r.target_temp_min:.1f}~{r.target_temp_max:.1f}℃",
+                    "稽核结论": "异常" if r.is_abnormal else "正常",
+                    "异常节点": abnormal_tag,
+                    "连续超温(分钟)": r.overtemp_total_minutes if r.has_continuous_overtemp else "",
+                    "卸货后延续": post_info,
+                    "复核状态": review_st,
+                    "备注": r.remark,
+                    "责任人": r.responsible_person,
+                    "摘要文件": r.summary_file_path if r.summary_file_path else ""
+                })
+
+            with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+                if rows:
+                    writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+            all_report_files.append(filepath)
+
+    return "\n".join(all_report_files)
+
+
+def print_vehicle_review_summary(results: List[AuditResult]) -> None:
+    date_groups: dict = defaultdict(list)
+    for r in results:
+        d = r.load_time.strftime('%Y-%m-%d')
+        date_groups[d].append(r)
+
+    print("\n【车辆日终复盘】")
+    for d, day_results in sorted(date_groups.items()):
+        plate_groups: dict = defaultdict(list)
+        for r in day_results:
+            plate_groups[r.plate_number].append(r)
+
+        print(f"  日期: {d}")
+        for plate, group in sorted(plate_groups.items()):
+            group_sorted = sorted(group, key=lambda r: r.load_time)
+            first = group_sorted[0].load_time.strftime('%H:%M')
+            last = group_sorted[-1].unload_time.strftime('%H:%M')
+            total = len(group_sorted)
+            abn = sum(1 for r in group_sorted if r.is_abnormal)
+            pending = sum(1 for r in group_sorted if r.is_abnormal and r.review_status == "待复核")
+            print(f"    {plate}: {first}~{last}  {total}票 异常{abn} 待复核{pending}")
+
+            for seq, r in enumerate(group_sorted, 1):
+                tag = ""
+                if r.is_abnormal:
+                    tag = f" ⚠ {_get_abnormal_tags(r)}"
+                st = r.review_status if r.is_abnormal else "正常"
+                print(f"      {seq}. {r.waybill_no} "
+                      f"{r.load_time.strftime('%H:%M')}→{r.unload_time.strftime('%H:%M')} "
+                      f"匹配{r.matched_total_count}条 "
+                      f"[{st}]{tag}")
+    print("-" * 60)
+
+
+def generate_trend_report(
+    all_results: List[AuditResult],
+    output_dir: str
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+
+    date_groups: dict = defaultdict(list)
+    for r in all_results:
+        d = r.load_time.strftime('%Y-%m-%d')
+        date_groups[d].append(r)
+
+    all_report_files = []
+
+    for d, day_results in sorted(date_groups.items()):
+        filepath = os.path.join(output_dir, f"异常趋势_{d}.csv")
+
+        key_type_groups: dict = defaultdict(list)
+        for r in day_results:
+            if not r.is_abnormal:
+                continue
+            tags = _get_abnormal_tags(r).split("、")
+            for tag in tags:
+                tag = tag.strip()
+                if tag:
+                    key = (r.customer, r.meat_type, tag)
+                    key_type_groups[key].append(r)
+
+        rows = []
+        for key in sorted(key_type_groups.keys()):
+            customer, meat_type, tag = key
+            actual_group = key_type_groups[key]
+            plates = sorted(set(r.plate_number for r in actual_group))
+            wb_nos = [r.waybill_no for r in actual_group]
+            remarks = [f"{r.waybill_no}:{r.remark}" for r in actual_group if r.remark]
+
+            rows.append({
+                "日期": d,
+                "客户": customer,
+                "肉品类型": meat_type,
+                "异常类型": tag,
+                "运单数": len(actual_group),
+                "涉及车牌": "、".join(plates),
+                "涉及运单": "; ".join(wb_nos),
+                "备注摘要": "; ".join(remarks) if remarks else ""
+            })
+
+        rows.sort(key=lambda x: -x["运单数"])
+
+        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+            if rows:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+
+        all_report_files.append(filepath)
+
+    return "\n".join(all_report_files)
 

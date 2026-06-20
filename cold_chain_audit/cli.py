@@ -11,11 +11,13 @@ from .checker import audit_all
 from .reporter import (
     print_summary, generate_audit_files,
     generate_daily_report, export_review_csv,
-    generate_plate_handover_report, print_plate_summary
+    generate_plate_handover_report, print_plate_summary,
+    generate_vehicle_review, print_vehicle_review_summary,
+    generate_trend_report
 )
 from .models import Waybill, AuditResult
 from .review_store import (
-    find_latest_review_csv, load_review_statuses, apply_review_statuses
+    find_latest_review_csv, load_review_fields, apply_review_fields
 )
 
 
@@ -153,10 +155,10 @@ def check(input_dir, output_dir, date, customer, meat_type, abnormal_only):
 
     csv_file = find_latest_review_csv(output_dir)
     if csv_file:
-        old_statuses = load_review_statuses(csv_file)
-        if old_statuses:
-            restored = apply_review_statuses(results, old_statuses)
-            click.echo(f"  ✓ 读取历史复核状态 {len(old_statuses)} 项，"
+        old_fields = load_review_fields(csv_file)
+        if old_fields:
+            restored = apply_review_fields(results, old_fields)
+            click.echo(f"  ✓ 读取历史复核字段 {len(old_fields)} 项，"
                        f"{restored} 票已恢复为已确认/已放行（不重置）")
 
     report_path = generate_daily_report(results, output_dir)
@@ -175,7 +177,14 @@ def check(input_dir, output_dir, date, customer, meat_type, abnormal_only):
     plate_path = generate_plate_handover_report(results, output_dir)
     click.echo(f"车辆交接汇总已生成:\n  {plate_path}")
 
+    vehicle_path = generate_vehicle_review(results, output_dir)
+    click.echo(f"车辆日终复盘已生成:\n  {vehicle_path}")
+
+    trend_path = generate_trend_report(results, output_dir)
+    click.echo(f"异常趋势汇总已生成:\n  {trend_path}")
+
     print_plate_summary(results)
+    print_vehicle_review_summary(results)
 
     abnormal_count = sum(1 for r in results if r.is_abnormal)
     pending_count = sum(1 for r in results if r.is_abnormal and r.review_status == "待复核")
@@ -357,10 +366,10 @@ def review(input_dir, output_dir, date, customer, meat_type, status):
 
     csv_file = find_latest_review_csv(output_dir)
     if csv_file:
-        old_statuses = load_review_statuses(csv_file)
-        if old_statuses:
-            restored = apply_review_statuses(results, old_statuses)
-            click.echo(f"  ✓ 已读取历史复核状态 {len(old_statuses)} 项，"
+        old_fields = load_review_fields(csv_file)
+        if old_fields:
+            restored = apply_review_fields(results, old_fields)
+            click.echo(f"  ✓ 已读取历史复核字段 {len(old_fields)} 项，"
                        f"其中 {restored} 票已恢复为已确认/已放行状态")
 
     if status:
@@ -373,7 +382,15 @@ def review(input_dir, output_dir, date, customer, meat_type, status):
 
     plate_path = generate_plate_handover_report(results, output_dir)
     click.echo(f"\n车辆交接汇总已导出: {plate_path}")
+
+    vehicle_path = generate_vehicle_review(results, output_dir)
+    click.echo(f"车辆日终复盘已导出:\n  {vehicle_path}")
+
+    trend_path = generate_trend_report(results, output_dir)
+    click.echo(f"异常趋势汇总已导出:\n  {trend_path}")
+
     print_plate_summary(results)
+    print_vehicle_review_summary(results)
 
     abnormal_count = sum(1 for r in results if r.is_abnormal)
     total_count = len(results)

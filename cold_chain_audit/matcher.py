@@ -7,7 +7,8 @@ from .models import TemperatureRecord, Waybill
 def match_waybills_with_temps(
     waybills: List[Waybill],
     temp_records: List[TemperatureRecord],
-    pre_cool_window_minutes: int = 30
+    pre_cool_window_minutes: int = 30,
+    post_unload_window_minutes: int = 120
 ) -> Dict[str, List[TemperatureRecord]]:
     wb_no_temps: Dict[str, List[TemperatureRecord]] = defaultdict(list)
     plate_temps_no_wb: Dict[str, List[TemperatureRecord]] = defaultdict(list)
@@ -56,7 +57,7 @@ def match_waybills_with_temps(
                 next_load = plate_wbs[wb_idx + 1].load_time
 
         start_bound = wb.load_time - timedelta(minutes=pre_cool_window_minutes)
-        end_bound = wb.unload_time + timedelta(minutes=pre_cool_window_minutes)
+        end_bound = wb.unload_time + timedelta(minutes=post_unload_window_minutes)
 
         if prev_unload is not None:
             gap_start = prev_unload + timedelta(minutes=5)
