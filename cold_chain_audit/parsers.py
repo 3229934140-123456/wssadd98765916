@@ -30,6 +30,13 @@ def _find_col(df: pd.DataFrame, candidates: List[str]) -> str:
     raise KeyError(f"未找到列，候选: {candidates}, 实际列: {list(df.columns)}")
 
 
+def _try_find_col(df: pd.DataFrame, candidates: List[str]) -> str:
+    try:
+        return _find_col(df, candidates)
+    except KeyError:
+        return None
+
+
 def parse_temperature_files(folder: str) -> List[TemperatureRecord]:
     records: List[TemperatureRecord] = []
     patterns = ['*.csv', '*.txt', '*.xlsx', '*.xls']
@@ -44,6 +51,7 @@ def parse_temperature_files(folder: str) -> List[TemperatureRecord]:
             plate_col = _find_col(df, ['车牌', '车牌号', 'plate', 'plate_number', '车号'])
             time_col = _find_col(df, ['时间', '记录时间', 'time', 'datetime', 'timestamp', '采集时间'])
             temp_col = _find_col(df, ['温度', '温度值', 'temp', 'temperature', '车厢温度'])
+            wb_col = _try_find_col(df, ['运单号', '运单编号', 'waybill', 'waybill_no', '单号'])
 
             for _, row in df.iterrows():
                 try:
@@ -52,10 +60,16 @@ def parse_temperature_files(folder: str) -> List[TemperatureRecord]:
                     temp = float(row[temp_col])
                     if pd.isna(ts) or pd.isna(temp):
                         continue
+                    wb_no = ""
+                    if wb_col:
+                        raw = row[wb_col]
+                        if pd.notna(raw):
+                            wb_no = str(raw).strip()
                     records.append(TemperatureRecord(
                         plate_number=plate,
                         record_time=ts.to_pydatetime(),
-                        temperature=temp
+                        temperature=temp,
+                        waybill_no=wb_no
                     ))
                 except Exception:
                     continue
@@ -98,12 +112,14 @@ def parse_waybills(folder: str, standards: Dict[Tuple[str, str], CustomerStandar
                         pre_cool_req = std.pre_cool_required
                         pre_cool_t = std.pre_cool_temp
                         cont_ot = std.continuous_overtemp_minutes
+                        has_std = True
                     else:
                         tmin = -18.0
                         tmax = -10.0
                         pre_cool_req = True
                         pre_cool_t = -10.0
                         cont_ot = 10
+                        has_std = False
 
                     waybills.append(Waybill(
                         waybill_no=wb_no,
@@ -116,7 +132,8 @@ def parse_waybills(folder: str, standards: Dict[Tuple[str, str], CustomerStandar
                         target_temp_max=tmax,
                         pre_cool_required=pre_cool_req,
                         pre_cool_temp=pre_cool_t,
-                        continuous_overtemp_minutes=cont_ot
+                        continuous_overtemp_minutes=cont_ot,
+                        has_standard=has_std
                     ))
                 except Exception:
                     continue

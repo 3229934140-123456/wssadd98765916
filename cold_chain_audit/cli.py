@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import click
 from datetime import datetime, date
 from typing import List
@@ -7,7 +8,7 @@ from typing import List
 from .parsers import parse_temperature_files, parse_waybills, parse_standards
 from .matcher import match_waybills_with_temps
 from .checker import audit_all
-from .reporter import print_summary, generate_audit_files
+from .reporter import print_summary, generate_audit_files, generate_daily_report
 from .models import Waybill
 
 
@@ -45,7 +46,13 @@ def _filter_waybills(
     return filtered
 
 
-@click.command()
+@click.group()
+def cli():
+    """肉类冷链温区稽核工具 - 批量检查运输温度合规性"""
+    pass
+
+
+@cli.command()
 @click.option(
     '--input-dir', '-i',
     type=click.Path(file_okay=False, dir_okay=True),
@@ -82,11 +89,11 @@ def _filter_waybills(
     '--abnormal-only', is_flag=True,
     help='只输出异常运单的摘要文件'
 )
-def main(input_dir, output_dir, date, customer, meat_type, abnormal_only):
-    """肉类冷链温区稽核工具 - 批量检查运输温度合规性
+def check(input_dir, output_dir, date, customer, meat_type, abnormal_only):
+    """执行冷链温区稽核检查
 
     将温度记录仪文件、运单清单、客户温区标准分别放入指定目录的
-    temperature/、waybills/、standards/ 子文件夹中，运行本工具即可自动稽核。
+    temperature/、waybills/、standards/ 子文件夹中，运行本命令即可自动稽核。
     """
     temp_dir = os.path.join(input_dir, 'temperature')
     waybill_dir = os.path.join(input_dir, 'waybills')
@@ -113,7 +120,8 @@ def main(input_dir, output_dir, date, customer, meat_type, abnormal_only):
     click.echo(f"  ✓ 读取到 {len(waybills)} 条运单")
 
     temp_records = parse_temperature_files(temp_dir)
-    click.echo(f"  ✓ 读取到 {len(temp_records)} 条温度记录")
+    wb_no_count = sum(1 for r in temp_records if r.waybill_no)
+    click.echo(f"  ✓ 读取到 {len(temp_records)} 条温度记录 (含运单号 {wb_no_count} 条)")
 
     filtered = _filter_waybills(waybills, date, customer, meat_type)
     if date or customer or meat_type:
@@ -141,9 +149,111 @@ def main(input_dir, output_dir, date, customer, meat_type, abnormal_only):
         files = generate_audit_files(output_results, output_dir)
         click.echo(f"\n稽核摘要文件已生成到: {os.path.abspath(output_dir)}")
         click.echo(f"共生成 {len(files)} 个摘要文件")
+
+        report_path = generate_daily_report(output_results, output_dir)
+        if report_path:
+            click.echo(f"汇总日报已生成: {report_path}")
     else:
         click.echo("\n没有需要输出的稽核结果。")
 
 
+@cli.command()
+@click.option(
+    '--output-dir', '-o',
+    type=click.Path(file_okay=False, dir_okay=True),
+    default='./data',
+    show_default=True,
+    help='模板文件输出目录'
+)
+@click.option(
+    '--with-sample', is_flag=True,
+    help='同时生成示例数据文件，方便培训新人'
+)
+def template(output_dir, with_sample):
+    """生成空白模板文件，质检员照着填就能跑
+
+    在指定目录下生成 temperature/、waybills/、standards/ 三个子文件夹，
+    每个文件夹中放入带列头的空白 CSV 模板。
+    加 --with-sample 时额外生成带示例数据的文件。
+    """
+
+    temp_dir = os.path.join(output_dir, 'temperature')
+    wb_dir = os.path.join(output_dir, 'waybills')
+    std_dir = os.path.join(output_dir, 'standards')
+
+    for d in [temp_dir, wb_dir, std_dir]:
+        os.makedirs(d, exist_ok=True)
+
+    std_template = os.path.join(std_dir, '客户温区标准_模板.csv')
+    with open(std_template, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['客户', '肉品', '最低温', '最高温', '预冷要求', '预冷温度', '连续超温判定(分钟)'])
+    click.echo(f"  ✓ {std_template}")
+
+    wb_template = os.path.join(wb_dir, '运单清单_模板.csv')
+    with open(wb_template, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['运单号', '车牌', '客户', '肉品', '装车时间', '卸货时间'])
+    click.echo(f"  ✓ {wb_template}")
+
+    temp_template = os.path.join(temp_dir, '温度记录_模板.csv')
+    with open(temp_template, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['车牌', '时间', '温度', '运单号'])
+    click.echo(f"  ✓ {temp_template}")
+
+    click.echo(f"\n空白模板已生成到: {os.path.abspath(output_dir)}")
+    click.echo("质检员按列头填入数据后，运行 audit check 即可稽核。")
+
+    if with_sample:
+        click.echo("\n正在生成示例数据...")
+
+        std_sample = os.path.join(std_dir, '客户温区标准_示例.csv')
+        with open(std_sample, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['客户', '肉品', '最低温', '最高温', '预冷要求', '预冷温度', '连续超温判定(分钟)'])
+            writer.writerow(['大润发', '冷鲜猪肉', 0, 4, '是', 4, 15])
+            writer.writerow(['大润发', '冷冻牛肉', -18, -10, '是', -10, 10])
+            writer.writerow(['沃尔玛', '冷鲜猪肉', 0, 4, '是', 4, 15])
+            writer.writerow(['沃尔玛', '冷冻鸡肉', -18, -10, '是', -10, 10])
+        click.echo(f"  ✓ {std_sample}")
+
+        wb_sample = os.path.join(wb_dir, '运单清单_示例.csv')
+        with open(wb_sample, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['运单号', '车牌', '客户', '肉品', '装车时间', '卸货时间'])
+            writer.writerow(['YD20250620001', '沪A12345', '大润发', '冷鲜猪肉', '2025-06-20 06:30:00', '2025-06-20 09:15:00'])
+            writer.writerow(['YD20250620002', '沪B67890', '沃尔玛', '冷冻牛肉', '2025-06-20 07:00:00', '2025-06-20 10:45:00'])
+        click.echo(f"  ✓ {wb_sample}")
+
+        temp_sample = os.path.join(temp_dir, '温度记录_示例.csv')
+        with open(temp_sample, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['车牌', '时间', '温度', '运单号'])
+            writer.writerow(['沪A12345', '2025-06-20 06:00:00', 3.5, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 06:30:00', 3.2, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 07:00:00', 2.3, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 07:30:00', 1.5, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 08:00:00', 0.8, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 08:30:00', 2.0, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 09:00:00', 3.2, 'YD20250620001'])
+            writer.writerow(['沪A12345', '2025-06-20 09:15:00', 3.6, 'YD20250620001'])
+            writer.writerow(['沪B67890', '2025-06-20 06:30:00', -12.0, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 07:00:00', -12.0, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 07:30:00', -11.0, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 08:00:00', -9.5, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 08:30:00', -7.5, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 09:00:00', -6.5, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 09:30:00', -5.5, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 10:00:00', -6.0, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 10:30:00', -10.0, 'YD20250620002'])
+            writer.writerow(['沪B67890', '2025-06-20 10:45:00', -11.5, 'YD20250620002'])
+        click.echo(f"  ✓ {temp_sample}")
+
+        click.echo("\n示例数据已生成！新人可以先看示例理解格式，")
+        click.echo("再用模板新建自己的数据文件。")
+        click.echo("运行 audit check -i <目录> 即可对示例数据执行稽核。")
+
+
 if __name__ == '__main__':
-    main()
+    cli()

@@ -84,8 +84,11 @@ def audit_waybill(
 
     pre_cool_ok = True
     pre_cool_temp_at_load = _get_temp_at_or_before(sorted_records, waybill.load_time)
-    if waybill.pre_cool_required and pre_cool_temp_at_load > waybill.pre_cool_temp:
+    if waybill.pre_cool_required and sorted_records and pre_cool_temp_at_load > waybill.pre_cool_temp:
         pre_cool_ok = False
+
+    if not sorted_records:
+        pre_cool_temp_at_load = 0.0
 
     overtemp_segments = _find_continuous_overtemp(
         sorted_records,
@@ -113,32 +116,36 @@ def audit_waybill(
     is_abnormal = False
     suggestions: List[str] = []
 
-    if not pre_cool_ok:
+    if not sorted_records:
         is_abnormal = True
-        suggestions.append(
-            f"装车前未预冷：装车时温度{pre_cool_temp_at_load:.1f}℃，"
-            f"高于要求{waybill.pre_cool_temp:.1f}℃，需加强预冷管理"
-        )
+        suggestions.append("缺少运输温度数据，无法判断温度合规性，需核查记录仪导出文件")
+    else:
+        if not pre_cool_ok:
+            is_abnormal = True
+            suggestions.append(
+                f"装车前未预冷：装车时温度{pre_cool_temp_at_load:.1f}℃，"
+                f"高于要求{waybill.pre_cool_temp:.1f}℃，需加强预冷管理"
+            )
 
-    if has_continuous_overtemp:
-        is_abnormal = True
-        total_ot = sum(s.duration_minutes for s in overtemp_segments)
-        suggestions.append(
-            f"途中连续超温{len(overtemp_segments)}段，"
-            f"累计{total_ot:.0f}分钟，最高超温{max(s.max_temp for s in overtemp_segments):.1f}℃，"
-            f"需核查制冷设备及装卸操作"
-        )
+        if has_continuous_overtemp:
+            is_abnormal = True
+            total_ot = sum(s.duration_minutes for s in overtemp_segments)
+            suggestions.append(
+                f"途中连续超温{len(overtemp_segments)}段，"
+                f"累计{total_ot:.0f}分钟，最高超温{max(s.max_temp for s in overtemp_segments):.1f}℃，"
+                f"需核查制冷设备及装卸操作"
+            )
 
-    if has_post_unload_data:
-        is_abnormal = True
-        suggestions.append(
-            f"卸货后仍有{post_unload_minutes:.0f}分钟温度记录，"
-            f"可能存在运单时长计算错误或记录仪未及时关闭"
-        )
+        if has_post_unload_data:
+            is_abnormal = True
+            suggestions.append(
+                f"卸货后仍有{post_unload_minutes:.0f}分钟温度记录，"
+                f"可能存在运单时长计算错误或记录仪未及时关闭"
+            )
 
-    if not in_transit:
-        is_abnormal = True
-        suggestions.append("运输途中无温度记录数据，无法判断温度合规性")
+        if not in_transit:
+            is_abnormal = True
+            suggestions.append("运输途中无温度记录数据，无法判断温度合规性")
 
     return AuditResult(
         waybill_no=waybill.waybill_no,
@@ -155,12 +162,17 @@ def audit_waybill(
         pre_cool_ok=pre_cool_ok,
         pre_cool_temp_at_load=round(pre_cool_temp_at_load, 2),
         has_continuous_overtemp=has_continuous_overtemp,
-        overtemp_segments=overtemp_segments,
         has_post_unload_data=has_post_unload_data,
         post_unload_minutes=round(post_unload_minutes, 1),
         is_abnormal=is_abnormal,
+        pre_cool_required=waybill.pre_cool_required,
+        pre_cool_temp=waybill.pre_cool_temp,
+        continuous_overtemp_minutes=waybill.continuous_overtemp_minutes,
+        has_standard=waybill.has_standard,
+        overtemp_segments=overtemp_segments,
         suggestions=suggestions,
-        temp_records_count=len(in_transit)
+        temp_records_count=len(in_transit),
+        matched_total_count=len(sorted_records)
     )
 
 

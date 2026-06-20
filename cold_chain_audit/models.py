@@ -8,6 +8,7 @@ class TemperatureRecord:
     plate_number: str
     record_time: datetime
     temperature: float
+    waybill_no: str = ""
 
 
 @dataclass
@@ -23,6 +24,7 @@ class Waybill:
     pre_cool_required: bool = True
     pre_cool_temp: float = 0.0
     continuous_overtemp_minutes: int = 10
+    has_standard: bool = True
 
 
 @dataclass
@@ -63,6 +65,12 @@ class AuditResult:
     has_post_unload_data: bool
     post_unload_minutes: float
     is_abnormal: bool
+    pre_cool_required: bool = True
+    pre_cool_temp: float = 0.0
+    continuous_overtemp_minutes: int = 10
+    has_standard: bool = True
     overtemp_segments: List[OverTempSegment] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)
     temp_records_count: int = 0
+    matched_total_count: int = 0
+    summary_file_path: str = ""

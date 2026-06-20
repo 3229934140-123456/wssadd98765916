@@ -1,5 +1,7 @@
 import os
+import csv
 from typing import List
+from collections import defaultdict
 from .models import AuditResult
 
 
@@ -16,21 +18,37 @@ def print_summary(results: List[AuditResult]) -> None:
     print(f"  异常运单: {len(abnormal)} 票")
     print("-" * 60)
 
+    print("\n【每票匹配记录数】")
+    for r in results:
+        status = "正常" if not r.is_abnormal else "异常"
+        in_transit = r.temp_records_count
+        total_matched = r.matched_total_count
+        extra = total_matched - in_transit
+        match_info = f"途中{in_transit}条"
+        if extra > 0:
+            match_info += f" + 预冷/卸货{extra}条"
+        print(f"  {r.waybill_no}  {r.plate_number}  匹配{total_matched}条 ({match_info})  [{status}]")
+
     if abnormal:
         print("\n【异常运单列表】")
         for i, r in enumerate(abnormal, 1):
             status_tags = []
-            if not r.pre_cool_ok:
-                status_tags.append("未预冷")
-            if r.has_continuous_overtemp:
-                status_tags.append("连续超温")
-            if r.has_post_unload_data:
-                status_tags.append("卸货后计时")
+            if r.matched_total_count == 0:
+                status_tags.append("缺少运输温度数据")
+            else:
+                if not r.pre_cool_ok:
+                    status_tags.append("未预冷")
+                if r.has_continuous_overtemp:
+                    status_tags.append("连续超温")
+                if r.has_post_unload_data:
+                    status_tags.append("卸货后计时")
+            if not r.has_standard:
+                status_tags.append("无客户温区标准")
             tag_str = "、".join(status_tags)
 
             print(f"  {i}. [{r.waybill_no}] {r.customer} - {r.meat_type}")
             print(f"     车牌: {r.plate_number}  问题: {tag_str}")
-            if r.has_continuous_overtemp and r.overtemp_segments:
+            if r.matched_total_count > 0 and r.has_continuous_overtemp and r.overtemp_segments:
                 max_ot = max(s.max_temp for s in r.overtemp_segments)
                 print(f"     实际温度: {r.actual_temp_min:.1f}~{r.actual_temp_max:.1f}℃  "
                       f"目标: {r.target_temp_min:.1f}~{r.target_temp_max:.1f}℃  "
@@ -53,7 +71,7 @@ def generate_audit_files(results: List[AuditResult], output_dir: str) -> List[st
         lines.append("=" * 50)
         lines.append("   冷链运输温度稽核摘要")
         lines.append("=" * 50)
-        lines.append(f"")
+        lines.append("")
         lines.append(f"运单号:      {r.waybill_no}")
         lines.append(f"车牌:        {r.plate_number}")
         lines.append(f"客户:        {r.customer}")
@@ -61,20 +79,30 @@ def generate_audit_files(results: List[AuditResult], output_dir: str) -> List[st
         lines.append(f"装车时间:    {r.load_time.strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"卸货时间:    {r.unload_time.strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"运输时长:    {r.actual_duration_minutes:.0f} 分钟")
-        lines.append(f"温度记录数:  {r.temp_records_count} 条")
-        lines.append(f"")
+        lines.append(f"匹配记录数:  {r.matched_total_count} 条 (途中 {r.temp_records_count} 条)")
+        lines.append("")
         lines.append("-" * 50)
-        lines.append("【目标温区】")
-        lines.append(f"  温度范围:  {r.target_temp_min:.1f}℃ ~ {r.target_temp_max:.1f}℃")
-        lines.append(f"  预冷要求:  {'是' if r.target_temp_min < 0 else '否'} "
-                     f"(装车前温度不高于 {r.target_temp_max:.1f}℃)")
-        lines.append(f"  连续超温判定阈值: {10} 分钟")
+        lines.append("【客户温区标准】")
+        if r.has_standard:
+            lines.append(f"  温度范围:      {r.target_temp_min:.1f}℃ ~ {r.target_temp_max:.1f}℃")
+            lines.append(f"  预冷要求:      {'是' if r.pre_cool_required else '否'}")
+            lines.append(f"  预冷温度上限:  {r.pre_cool_temp:.1f}℃ (装车前应不高于此温度)")
+            lines.append(f"  连续超温阈值:  {r.continuous_overtemp_minutes} 分钟")
+        else:
+            lines.append(f"  未找到客户温区标准，使用默认值:")
+            lines.append(f"  温度范围:      {r.target_temp_min:.1f}℃ ~ {r.target_temp_max:.1f}℃")
+            lines.append(f"  预冷要求:      {'是' if r.pre_cool_required else '否'}")
+            lines.append(f"  预冷温度上限:  {r.pre_cool_temp:.1f}℃")
+            lines.append(f"  连续超温阈值:  {r.continuous_overtemp_minutes} 分钟")
         lines.append("")
         lines.append("-" * 50)
         lines.append("【实际温度】")
-        lines.append(f"  最低温度:  {r.actual_temp_min:.1f}℃")
-        lines.append(f"  最高温度:  {r.actual_temp_max:.1f}℃")
-        lines.append(f"  装车时温度: {r.pre_cool_temp_at_load:.1f}℃")
+        if r.matched_total_count > 0:
+            lines.append(f"  最低温度:      {r.actual_temp_min:.1f}℃")
+            lines.append(f"  最高温度:      {r.actual_temp_max:.1f}℃")
+            lines.append(f"  装车时温度:    {r.pre_cool_temp_at_load:.1f}℃")
+        else:
+            lines.append(f"  无温度记录数据")
         lines.append("")
 
         lines.append("-" * 50)
@@ -82,7 +110,7 @@ def generate_audit_files(results: List[AuditResult], output_dir: str) -> List[st
         lines.append(f"  预冷检查:  {'合格' if r.pre_cool_ok else '不合格'}")
         if not r.pre_cool_ok:
             lines.append(f"    → 装车时温度 {r.pre_cool_temp_at_load:.1f}℃，"
-                         f"高于要求 {r.target_temp_max:.1f}℃")
+                         f"高于要求 {r.pre_cool_temp:.1f}℃")
 
         lines.append(f"  连续超温:  {'无' if not r.has_continuous_overtemp else '有'}")
         if r.has_continuous_overtemp and r.overtemp_segments:
@@ -116,6 +144,80 @@ def generate_audit_files(results: List[AuditResult], output_dir: str) -> List[st
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
 
+        r.summary_file_path = filepath
         generated_files.append(filepath)
 
     return generated_files
+
+
+def generate_daily_report(results: List[AuditResult], output_dir: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+
+    date_groups: dict = defaultdict(list)
+    for r in results:
+        d = r.load_time.strftime('%Y-%m-%d')
+        date_groups[d].append(r)
+
+    all_report_files = []
+
+    for d, day_results in sorted(date_groups.items()):
+        filename = f"日报_{d}.csv"
+        filepath = os.path.join(output_dir, filename)
+
+        key_groups: dict = defaultdict(list)
+        for r in day_results:
+            key = (r.customer, r.meat_type)
+            key_groups[key].append(r)
+
+        rows = []
+        for (customer, meat_type), group in sorted(key_groups.items()):
+            total_count = len(group)
+            abnormal_list = [r for r in group if r.is_abnormal]
+            abnormal_count = len(abnormal_list)
+
+            reason_counter: dict = defaultdict(int)
+            for r in abnormal_list:
+                if r.matched_total_count == 0:
+                    reason_counter["缺少运输温度数据"] += 1
+                else:
+                    if not r.pre_cool_ok:
+                        reason_counter["未预冷"] += 1
+                    if r.has_continuous_overtemp:
+                        reason_counter["连续超温"] += 1
+                    if r.has_post_unload_data:
+                        reason_counter["卸货后计时"] += 1
+                if not r.has_standard:
+                    reason_counter["无客户温区标准"] += 1
+
+            if reason_counter:
+                sorted_reasons = sorted(reason_counter.items(), key=lambda x: -x[1])
+                main_reason = "、".join(
+                    f"{reason}({count})" for reason, count in sorted_reasons
+                )
+            else:
+                main_reason = ""
+
+            summary_paths = "; ".join(
+                os.path.basename(r.summary_file_path) for r in group
+                if r.summary_file_path
+            )
+
+            rows.append({
+                "日期": d,
+                "客户": customer,
+                "肉品类型": meat_type,
+                "运单数": total_count,
+                "异常数": abnormal_count,
+                "主要异常原因": main_reason,
+                "摘要文件": summary_paths
+            })
+
+        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+            if rows:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+
+        all_report_files.append(filepath)
+
+    return "\n".join(all_report_files)
