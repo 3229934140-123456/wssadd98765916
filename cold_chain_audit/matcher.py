@@ -29,51 +29,51 @@ def match_waybills_with_temps(
     for plate in wb_by_plate:
         wb_by_plate[plate].sort(key=lambda w: w.load_time)
 
-    result: Dict[str, List[TemperatureRecord]] = {}
     consumed_indices: Dict[str, set] = defaultdict(set)
+    result: Dict[str, List[TemperatureRecord]] = {}
 
     for wb in waybills:
         matched: List[TemperatureRecord] = []
 
         if wb.waybill_no in wb_no_temps:
-            matched = list(wb_no_temps[wb.waybill_no])
-        else:
-            candidates = plate_temps_no_wb.get(wb.plate_number, [])
-            plate_wbs = wb_by_plate.get(wb.plate_number, [])
+            matched.extend(wb_no_temps[wb.waybill_no])
 
-            wb_idx = None
-            for i, pw in enumerate(plate_wbs):
-                if pw.waybill_no == wb.waybill_no:
-                    wb_idx = i
-                    break
+        candidates = plate_temps_no_wb.get(wb.plate_number, [])
+        plate_wbs = wb_by_plate.get(wb.plate_number, [])
 
-            prev_unload = None
-            next_load = None
-            if wb_idx is not None:
-                if wb_idx > 0:
-                    prev_unload = plate_wbs[wb_idx - 1].unload_time
-                if wb_idx < len(plate_wbs) - 1:
-                    next_load = plate_wbs[wb_idx + 1].load_time
+        wb_idx = None
+        for i, pw in enumerate(plate_wbs):
+            if pw.waybill_no == wb.waybill_no:
+                wb_idx = i
+                break
 
-            start_bound = wb.load_time - timedelta(minutes=pre_cool_window_minutes)
-            end_bound = wb.unload_time + timedelta(minutes=pre_cool_window_minutes)
+        prev_unload = None
+        next_load = None
+        if wb_idx is not None:
+            if wb_idx > 0:
+                prev_unload = plate_wbs[wb_idx - 1].unload_time
+            if wb_idx < len(plate_wbs) - 1:
+                next_load = plate_wbs[wb_idx + 1].load_time
 
-            if prev_unload is not None:
-                gap_start = prev_unload + timedelta(minutes=5)
-                if gap_start > start_bound:
-                    start_bound = gap_start
+        start_bound = wb.load_time - timedelta(minutes=pre_cool_window_minutes)
+        end_bound = wb.unload_time + timedelta(minutes=pre_cool_window_minutes)
 
-            if next_load is not None:
-                gap_end = next_load - timedelta(minutes=5)
-                if gap_end < end_bound:
-                    end_bound = gap_end
+        if prev_unload is not None:
+            gap_start = prev_unload + timedelta(minutes=5)
+            if gap_start > start_bound:
+                start_bound = gap_start
 
-            for idx, r in enumerate(candidates):
-                if idx in consumed_indices.get(wb.plate_number, set()):
-                    continue
-                if start_bound <= r.record_time <= end_bound:
-                    matched.append(r)
-                    consumed_indices[wb.plate_number].add(idx)
+        if next_load is not None:
+            gap_end = next_load - timedelta(minutes=5)
+            if gap_end < end_bound:
+                end_bound = gap_end
+
+        for idx, r in enumerate(candidates):
+            if idx in consumed_indices.get(wb.plate_number, set()):
+                continue
+            if start_bound <= r.record_time <= end_bound:
+                matched.append(r)
+                consumed_indices[wb.plate_number].add(idx)
 
         matched.sort(key=lambda r: r.record_time)
         result[wb.waybill_no] = matched

@@ -3,13 +3,16 @@ import sys
 import csv
 import click
 from datetime import datetime, date
-from typing import List
+from typing import List, Optional
 
 from .parsers import parse_temperature_files, parse_waybills, parse_standards
 from .matcher import match_waybills_with_temps
 from .checker import audit_all
-from .reporter import print_summary, generate_audit_files, generate_daily_report
-from .models import Waybill
+from .reporter import (
+    print_summary, generate_audit_files,
+    generate_daily_report, export_review_csv
+)
+from .models import Waybill, AuditResult
 
 
 def _filter_waybills(
@@ -141,20 +144,21 @@ def check(input_dir, output_dir, date, customer, meat_type, abnormal_only):
 
     print_summary(results)
 
-    output_results = results
+    generate_audit_files(results, output_dir)
+    click.echo(f"\n稽核摘要文件已生成到: {os.path.abspath(output_dir)}")
+
+    report_path = generate_daily_report(results, output_dir)
+    if report_path:
+        click.echo(f"汇总日报已生成:\n  {report_path}")
+
     if abnormal_only:
-        output_results = [r for r in results if r.is_abnormal]
+        abnormal_results = [r for r in results if r.is_abnormal]
+        if abnormal_results:
+            generate_audit_files(abnormal_results, output_dir)
+            click.echo(f"异常运单摘要已重新生成 ({len(abnormal_results)} 票)")
 
-    if output_results:
-        files = generate_audit_files(output_results, output_dir)
-        click.echo(f"\n稽核摘要文件已生成到: {os.path.abspath(output_dir)}")
-        click.echo(f"共生成 {len(files)} 个摘要文件")
-
-        report_path = generate_daily_report(output_results, output_dir)
-        if report_path:
-            click.echo(f"汇总日报已生成: {report_path}")
-    else:
-        click.echo("\n没有需要输出的稽核结果。")
+    review_path = export_review_csv(results, output_dir)
+    click.echo(f"复核交接单已生成: {review_path}")
 
 
 @cli.command()
@@ -253,6 +257,93 @@ def template(output_dir, with_sample):
         click.echo("\n示例数据已生成！新人可以先看示例理解格式，")
         click.echo("再用模板新建自己的数据文件。")
         click.echo("运行 audit check -i <目录> 即可对示例数据执行稽核。")
+
+
+@cli.command()
+@click.option(
+    '--input-dir', '-i',
+    type=click.Path(file_okay=False, dir_okay=True),
+    default='./data',
+    show_default=True,
+    help='输入数据目录'
+)
+@click.option(
+    '--output-dir', '-o',
+    type=click.Path(file_okay=False, dir_okay=True),
+    default='./output',
+    show_default=True,
+    help='复核交接单输出目录'
+)
+@click.option(
+    '--date', '-d',
+    type=str,
+    default=None,
+    help='只导出指定日期的运单'
+)
+@click.option(
+    '--customer', '-c',
+    type=str,
+    default=None,
+    help='只导出指定客户的运单'
+)
+@click.option(
+    '--meat-type', '-m',
+    type=str,
+    default=None,
+    help='只导出指定肉品类型的运单'
+)
+@click.option(
+    '--status', '-s',
+    type=click.Choice(['待复核', '已确认', '已放行']),
+    default=None,
+    help='只导出指定复核状态的运单'
+)
+def review(input_dir, output_dir, date, customer, meat_type, status):
+    """导出复核交接单，供主管签字确认
+
+    先运行 audit check 完成稽核后，用本命令导出复核交接单。
+    异常运单默认标记为"待复核"，质检员可修改 CSV 中的复核状态
+    为"已确认"或"已放行"后重新导入。
+    """
+    temp_dir = os.path.join(input_dir, 'temperature')
+    waybill_dir = os.path.join(input_dir, 'waybills')
+    standard_dir = os.path.join(input_dir, 'standards')
+
+    for d_name, d_path in [
+        ('温度记录', temp_dir),
+        ('运单清单', waybill_dir),
+        ('温区标准', standard_dir)
+    ]:
+        if not os.path.isdir(d_path):
+            click.echo(f"[错误] 找不到{d_name}目录: {d_path}", err=True)
+            sys.exit(1)
+
+    click.echo("正在读取数据并执行稽核...")
+
+    standards = parse_standards(standard_dir)
+    waybills = parse_waybills(waybill_dir, standards)
+    temp_records = parse_temperature_files(temp_dir)
+
+    filtered = _filter_waybills(waybills, date, customer, meat_type)
+    if not filtered:
+        click.echo("[提示] 没有符合条件的运单数据。")
+        return
+
+    matched = match_waybills_with_temps(filtered, temp_records)
+    results = audit_all(filtered, matched)
+
+    generate_audit_files(results, output_dir)
+
+    if status:
+        results = [r for r in results if r.review_status == status or (status == "待复核" and r.is_abnormal and r.review_status == "待复核")]
+
+    filepath = export_review_csv(results, output_dir)
+    click.echo(f"\n复核交接单已导出: {filepath}")
+    click.echo('质检员可在 CSV 中将复核状态改为"已确认"或"已放行"，再交给主管签字。')
+
+    abnormal_count = sum(1 for r in results if r.is_abnormal)
+    total_count = len(results)
+    click.echo(f"共 {total_count} 票运单，其中 {abnormal_count} 票异常待复核。")
 
 
 if __name__ == '__main__':

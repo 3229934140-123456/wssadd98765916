@@ -98,9 +98,12 @@ def audit_waybill(
         waybill.unload_time
     )
     has_continuous_overtemp = len(overtemp_segments) > 0
+    overtemp_total_minutes = round(sum(s.duration_minutes for s in overtemp_segments), 1)
+    overtemp_max_temp = max((s.max_temp for s in overtemp_segments), default=0.0)
 
     post_unload = [r for r in sorted_records if r.record_time > waybill.unload_time]
     post_unload_minutes = 0.0
+    post_unload_max_temp = 0.0
     has_post_unload_data = False
     if post_unload:
         first_after = post_unload[0].record_time
@@ -108,6 +111,8 @@ def audit_waybill(
         if gap < 60:
             last_after = post_unload[-1].record_time
             post_unload_minutes = (last_after - waybill.unload_time).total_seconds() / 60.0
+            post_unload_temps = [r.temperature for r in post_unload]
+            post_unload_max_temp = max(post_unload_temps)
             if post_unload_minutes > 30:
                 has_post_unload_data = True
 
@@ -129,17 +134,17 @@ def audit_waybill(
 
         if has_continuous_overtemp:
             is_abnormal = True
-            total_ot = sum(s.duration_minutes for s in overtemp_segments)
             suggestions.append(
                 f"途中连续超温{len(overtemp_segments)}段，"
-                f"累计{total_ot:.0f}分钟，最高超温{max(s.max_temp for s in overtemp_segments):.1f}℃，"
+                f"累计{overtemp_total_minutes:.0f}分钟，最高超温{overtemp_max_temp:.1f}℃，"
                 f"需核查制冷设备及装卸操作"
             )
 
         if has_post_unload_data:
             is_abnormal = True
             suggestions.append(
-                f"卸货后仍有{post_unload_minutes:.0f}分钟温度记录，"
+                f"卸货后仍有{post_unload_minutes:.0f}分钟温度记录"
+                f"(最高{post_unload_max_temp:.1f}℃)，"
                 f"可能存在运单时长计算错误或记录仪未及时关闭"
             )
 
@@ -172,7 +177,10 @@ def audit_waybill(
         overtemp_segments=overtemp_segments,
         suggestions=suggestions,
         temp_records_count=len(in_transit),
-        matched_total_count=len(sorted_records)
+        matched_total_count=len(sorted_records),
+        post_unload_max_temp=round(post_unload_max_temp, 2),
+        overtemp_total_minutes=overtemp_total_minutes,
+        overtemp_max_temp=round(overtemp_max_temp, 2)
     )
 
 

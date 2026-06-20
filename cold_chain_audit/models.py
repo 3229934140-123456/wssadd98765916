@@ -74,3 +74,7 @@ class AuditResult:
     temp_records_count: int = 0
     matched_total_count: int = 0
     summary_file_path: str = ""
+    review_status: str = "待复核"
+    post_unload_max_temp: float = 0.0
+    overtemp_total_minutes: float = 0.0
+    overtemp_max_temp: float = 0.0
