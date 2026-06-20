@@ -105,16 +105,23 @@ def audit_waybill(
     post_unload_minutes = 0.0
     post_unload_max_temp = 0.0
     has_post_unload_data = False
+    post_unload_level = ""
     if post_unload:
         first_after = post_unload[0].record_time
         gap = (first_after - waybill.unload_time).total_seconds() / 60.0
-        if gap < 60:
+        if gap < 120:
             last_after = post_unload[-1].record_time
             post_unload_minutes = (last_after - waybill.unload_time).total_seconds() / 60.0
             post_unload_temps = [r.temperature for r in post_unload]
             post_unload_max_temp = max(post_unload_temps)
-            if post_unload_minutes > 30:
+            if post_unload_minutes >= 60:
                 has_post_unload_data = True
+                post_unload_level = "≥1小时"
+            elif post_unload_minutes >= 45:
+                has_post_unload_data = True
+                post_unload_level = "45~60分钟"
+            elif post_unload_minutes >= 30:
+                post_unload_level = "30~45分钟"
 
     actual_duration = (waybill.unload_time - waybill.load_time).total_seconds() / 60.0
 
@@ -142,8 +149,9 @@ def audit_waybill(
 
         if has_post_unload_data:
             is_abnormal = True
+            level_text = f"(持续{post_unload_level})" if post_unload_level else ""
             suggestions.append(
-                f"卸货后仍有{post_unload_minutes:.0f}分钟温度记录"
+                f"卸货后仍有{post_unload_minutes:.0f}分钟温度记录{level_text}"
                 f"(最高{post_unload_max_temp:.1f}℃)，"
                 f"可能存在运单时长计算错误或记录仪未及时关闭"
             )
@@ -179,6 +187,7 @@ def audit_waybill(
         temp_records_count=len(in_transit),
         matched_total_count=len(sorted_records),
         post_unload_max_temp=round(post_unload_max_temp, 2),
+        post_unload_level=post_unload_level,
         overtemp_total_minutes=overtemp_total_minutes,
         overtemp_max_temp=round(overtemp_max_temp, 2)
     )

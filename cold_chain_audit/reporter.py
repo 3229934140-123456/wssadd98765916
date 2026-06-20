@@ -54,7 +54,8 @@ def print_summary(results: List[AuditResult]) -> None:
                       f"最高超温: {r.overtemp_max_temp:.1f}℃  "
                       f"累计超温: {r.overtemp_total_minutes:.0f}分钟")
             if r.has_post_unload_data:
-                print(f"     卸货后持续记录: {r.post_unload_minutes:.0f}分钟  "
+                level_text = f" [{r.post_unload_level}]" if r.post_unload_level else ""
+                print(f"     卸货后持续记录: {r.post_unload_minutes:.0f}分钟{level_text}  "
                       f"卸货后最高温: {r.post_unload_max_temp:.1f}℃")
     else:
         print("\n  所有运单温度均符合要求，无异常。")
@@ -130,7 +131,8 @@ def generate_audit_files(results: List[AuditResult], output_dir: str) -> List[st
 
         lines.append(f"  卸货后数据: {'无异常' if not r.has_post_unload_data else '异常'}")
         if r.has_post_unload_data:
-            lines.append(f"    → 卸货后仍有 {r.post_unload_minutes:.0f} 分钟温度记录，"
+            level_text = f"(持续{r.post_unload_level})" if r.post_unload_level else ""
+            lines.append(f"    → 卸货后仍有 {r.post_unload_minutes:.0f} 分钟温度记录{level_text}，"
                          f"最高温度 {r.post_unload_max_temp:.1f}℃")
 
         lines.append("")
@@ -150,7 +152,7 @@ def generate_audit_files(results: List[AuditResult], output_dir: str) -> List[st
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
 
-        r.summary_file_path = filepath
+        r.summary_file_path = os.path.abspath(filepath)
         generated_files.append(filepath)
 
     return generated_files
@@ -223,7 +225,7 @@ def generate_daily_report(
                 main_reason = ""
 
             summary_paths = "; ".join(
-                os.path.basename(r.summary_file_path) for r in group
+                r.summary_file_path for r in group
                 if r.summary_file_path
             )
 
@@ -265,9 +267,10 @@ def generate_daily_report(
                 "超温起时": overtemp_start,
                 "超温止时": overtemp_end,
                 "卸货后持续(分钟)": r.post_unload_minutes if r.has_post_unload_data else "",
+                "卸货后档位": r.post_unload_level if r.has_post_unload_data else "",
                 "卸货后最高温(℃)": r.post_unload_max_temp if r.has_post_unload_data else "",
                 "处理建议": "; ".join(r.suggestions),
-                "摘要文件": os.path.basename(r.summary_file_path) if r.summary_file_path else ""
+                "摘要文件": r.summary_file_path if r.summary_file_path else ""
             })
 
         with open(detail_file, 'w', encoding='utf-8-sig', newline='') as f:
@@ -310,7 +313,7 @@ def export_review_csv(
             "异常类型": _get_abnormal_tags(r) if r.is_abnormal else "",
             "处理建议": "; ".join(r.suggestions) if r.suggestions else "",
             "复核状态": status,
-            "摘要文件": os.path.basename(r.summary_file_path) if r.summary_file_path else ""
+            "摘要文件路径": r.summary_file_path if r.summary_file_path else ""
         })
 
     with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
@@ -320,3 +323,105 @@ def export_review_csv(
             writer.writerows(rows)
 
     return filepath
+
+
+def generate_plate_handover_report(
+    all_results: List[AuditResult],
+    output_dir: str
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+
+    date_groups: dict = defaultdict(list)
+    for r in all_results:
+        d = r.load_time.strftime('%Y-%m-%d')
+        date_groups[d].append(r)
+
+    all_report_files = []
+
+    for d, day_results in sorted(date_groups.items()):
+        plate_groups: dict = defaultdict(list)
+        for r in day_results:
+            plate_groups[r.plate_number].append(r)
+
+        filepath = os.path.join(output_dir, f"车辆交接汇总_{d}.csv")
+        rows = []
+
+        for plate, group in sorted(plate_groups.items()):
+            total_count = len(group)
+            abnormal_list = [r for r in group if r.is_abnormal]
+            abnormal_count = len(abnormal_list)
+
+            pending_wbs = [r.waybill_no for r in abnormal_list if r.review_status == "待复核"]
+            confirmed_wbs = [r.waybill_no for r in abnormal_list if r.review_status == "已确认"]
+            released_wbs = [r.waybill_no for r in abnormal_list if r.review_status == "已放行"]
+
+            normal_count = total_count - abnormal_count
+            abnormal_tags_set = set()
+            for r in abnormal_list:
+                if r.matched_total_count == 0:
+                    abnormal_tags_set.add("缺少数据")
+                else:
+                    if not r.pre_cool_ok:
+                        abnormal_tags_set.add("未预冷")
+                    if r.has_continuous_overtemp:
+                        abnormal_tags_set.add("连续超温")
+                    if r.has_post_unload_data:
+                        abnormal_tags_set.add("卸货后计时")
+                if not r.has_standard:
+                    abnormal_tags_set.add("无标准")
+
+            rows.append({
+                "日期": d,
+                "车牌": plate,
+                "运单数": total_count,
+                "正常数": normal_count,
+                "异常数": abnormal_count,
+                "主要异常类型": "、".join(sorted(abnormal_tags_set)),
+                "待复核运单": "; ".join(pending_wbs),
+                "待复核数": len(pending_wbs),
+                "已确认运单": "; ".join(confirmed_wbs),
+                "已确认数": len(confirmed_wbs),
+                "已放行运单": "; ".join(released_wbs),
+                "已放行数": len(released_wbs),
+                "全部运单": "; ".join(r.waybill_no for r in group)
+            })
+
+        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+            if rows:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+
+        all_report_files.append(filepath)
+
+    return "\n".join(all_report_files)
+
+
+def print_plate_summary(results: List[AuditResult]) -> None:
+    date_groups: dict = defaultdict(list)
+    for r in results:
+        d = r.load_time.strftime('%Y-%m-%d')
+        date_groups[d].append(r)
+
+    print("\n【车辆交接汇总】")
+    for d, day_results in sorted(date_groups.items()):
+        plate_groups: dict = defaultdict(list)
+        for r in day_results:
+            plate_groups[r.plate_number].append(r)
+
+        print(f"  日期: {d}")
+        for plate, group in sorted(plate_groups.items()):
+            total = len(group)
+            abn = sum(1 for r in group if r.is_abnormal)
+            pending = sum(1 for r in group if r.is_abnormal and r.review_status == "待复核")
+            conf = sum(1 for r in group if r.is_abnormal and r.review_status == "已确认")
+            rel = sum(1 for r in group if r.is_abnormal and r.review_status == "已放行")
+            normal = total - abn
+            print(f"    {plate}: {total}票(正常{normal},异常{abn}) "
+                  f"待复核{pending} 已确认{conf} 已放行{rel}")
+
+            if pending:
+                pending_wbs = [r.waybill_no for r in group if r.is_abnormal and r.review_status == "待复核"]
+                print(f"      待复核: {', '.join(pending_wbs)}")
+    print("-" * 60)
+

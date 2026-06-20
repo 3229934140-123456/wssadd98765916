@@ -10,9 +10,13 @@ from .matcher import match_waybills_with_temps
 from .checker import audit_all
 from .reporter import (
     print_summary, generate_audit_files,
-    generate_daily_report, export_review_csv
+    generate_daily_report, export_review_csv,
+    generate_plate_handover_report, print_plate_summary
 )
 from .models import Waybill, AuditResult
+from .review_store import (
+    find_latest_review_csv, load_review_statuses, apply_review_statuses
+)
 
 
 def _filter_waybills(
@@ -147,6 +151,14 @@ def check(input_dir, output_dir, date, customer, meat_type, abnormal_only):
     generate_audit_files(results, output_dir)
     click.echo(f"\n稽核摘要文件已生成到: {os.path.abspath(output_dir)}")
 
+    csv_file = find_latest_review_csv(output_dir)
+    if csv_file:
+        old_statuses = load_review_statuses(csv_file)
+        if old_statuses:
+            restored = apply_review_statuses(results, old_statuses)
+            click.echo(f"  ✓ 读取历史复核状态 {len(old_statuses)} 项，"
+                       f"{restored} 票已恢复为已确认/已放行（不重置）")
+
     report_path = generate_daily_report(results, output_dir)
     if report_path:
         click.echo(f"汇总日报已生成:\n  {report_path}")
@@ -159,6 +171,15 @@ def check(input_dir, output_dir, date, customer, meat_type, abnormal_only):
 
     review_path = export_review_csv(results, output_dir)
     click.echo(f"复核交接单已生成: {review_path}")
+
+    plate_path = generate_plate_handover_report(results, output_dir)
+    click.echo(f"车辆交接汇总已生成:\n  {plate_path}")
+
+    print_plate_summary(results)
+
+    abnormal_count = sum(1 for r in results if r.is_abnormal)
+    pending_count = sum(1 for r in results if r.is_abnormal and r.review_status == "待复核")
+    click.echo(f"\n  共 {len(results)} 票，异常 {abnormal_count} 票，待复核 {pending_count} 票。")
 
 
 @cli.command()
@@ -334,12 +355,25 @@ def review(input_dir, output_dir, date, customer, meat_type, status):
 
     generate_audit_files(results, output_dir)
 
+    csv_file = find_latest_review_csv(output_dir)
+    if csv_file:
+        old_statuses = load_review_statuses(csv_file)
+        if old_statuses:
+            restored = apply_review_statuses(results, old_statuses)
+            click.echo(f"  ✓ 已读取历史复核状态 {len(old_statuses)} 项，"
+                       f"其中 {restored} 票已恢复为已确认/已放行状态")
+
     if status:
         results = [r for r in results if r.review_status == status or (status == "待复核" and r.is_abnormal and r.review_status == "待复核")]
 
     filepath = export_review_csv(results, output_dir)
     click.echo(f"\n复核交接单已导出: {filepath}")
     click.echo('质检员可在 CSV 中将复核状态改为"已确认"或"已放行"，再交给主管签字。')
+    click.echo('下次运行本命令时，将自动读取最新复核状态，不会重置已确认/已放行的记录。')
+
+    plate_path = generate_plate_handover_report(results, output_dir)
+    click.echo(f"\n车辆交接汇总已导出: {plate_path}")
+    print_plate_summary(results)
 
     abnormal_count = sum(1 for r in results if r.is_abnormal)
     total_count = len(results)
